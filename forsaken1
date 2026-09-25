@@ -1,0 +1,1592 @@
+local RunService = game:GetService("RunService")
+local cloneref = (cloneref or clonereference or function(instance) return instance end)
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+
+local WindUI
+do
+    local ok, result = pcall(function() return require("./src/Init") end)
+    if ok then
+        WindUI = result
+    else
+        if cloneref(game:GetService("RunService")):IsStudio() then
+            WindUI = require(cloneref(ReplicatedStorage:WaitForChild("WindUI"):WaitForChild("Init")))
+        else
+            WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+        end
+    end
+end
+
+--// ---------- 顶部时间显示 ----------
+local LBLG = Instance.new("ScreenGui")
+local LBL = Instance.new("TextLabel")
+LBLG.Name = "LBLG"
+LBLG.Parent = game.CoreGui
+LBLG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+LBLG.Enabled = true
+LBL.Name = "LBL"
+LBL.Parent = LBLG
+LBL.BackgroundColor3 = Color3.new(1, 1, 1)
+LBL.BackgroundTransparency = 1
+LBL.BorderColor3 = Color3.new(0, 0, 0)
+LBL.Position = UDim2.new(0.75, 0, 0.010, 0)
+LBL.Size = UDim2.new(0, 133, 0, 30)
+LBL.Font = Enum.Font.GothamSemibold
+LBL.Text = "TextLabel"
+LBL.TextColor3 = Color3.new(1, 1, 1)
+LBL.TextScaled = true
+LBL.TextSize = 14
+LBL.TextWrapped = true
+LBL.Visible = true
+
+local Heartbeat = game:GetService("RunService").Heartbeat
+local LastIteration, Start
+local FrameUpdateTable = {}
+local function HeartbeatUpdate()
+    LastIteration = tick()
+    for Index = #FrameUpdateTable, 1, -1 do
+        FrameUpdateTable[Index + 1] = (FrameUpdateTable[Index] >= LastIteration - 1) and FrameUpdateTable[Index] or nil
+    end
+    FrameUpdateTable[1] = LastIteration
+    LBL.Text = ("北京时间:"..os.date("%H").."时"..os.date("%M").."分"..os.date("%S"))
+end
+Start = tick()
+Heartbeat:Connect(HeartbeatUpdate)
+
+--// ---------- 服务 ----------
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local TeleportService = game:GetService("TeleportService")
+local GuiService = game:GetService("GuiService")
+local RNG = Random.new()
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+--// ---------- 状态 ----------
+local AntiSlow = false
+local infinitestamina = false
+local timeforonegen = 2.5
+local timebetweenpuzzles = 3
+local Do1x1PopupsLoop = false
+local MaxRange = 120
+local hitboxmodificationEnabled = false
+local timeAhead = 0.2
+local ESP_Enabled = false
+
+local facingCheckEnabled = true
+local blockTPEnabled = false
+local predictionValue = 4
+local GuestSettingsOn = false
+local strictRangeOn = false
+local looseFacing = true
+local detectionRange = 18
+local predictiveBlockOn = false
+local edgeKillerDelay = 3
+local killerInRangeSince = nil
+local predictiveCooldown = 0
+local flingPunchOn = false
+local flingPower = 10000
+local hiddenfling = false
+local aimPunch = false
+local lastBlockTpTime = 0
+local GuestChargeSpeed = 2.833
+local looping = false
+
+local animTrack = nil
+local running = false
+local hubLoaded = true
+
+local toggles = {
+    StatsTracker = false,
+    ESP = false,
+    AutoRejoinOnKick = true,
+    Goon = false,
+    LayDown = false,
+    CustomCharge = false,
+}
+local activeConnections = {}
+local guiRefs = {}
+
+--// ---------- 工具 ----------
+local function runEvery(interval, fn)
+    task.spawn(function()
+        while true do
+            local ok, err = pcall(fn)
+            if not ok then warn("[runEvery]", err) end
+            task.wait(interval)
+        end
+    end)
+end
+
+local function fireproximityprompt(Obj, Amount, Skip)
+    if Obj.ClassName == "ProximityPrompt" then
+        Amount = Amount or 1
+        local PromptTime = Obj.HoldDuration
+        if Skip then Obj.HoldDuration = 0 end
+        for _ = 1, Amount do
+            Obj:InputHoldBegin()
+            if not Skip then wait(Obj.HoldDuration) end
+            Obj:InputHoldEnd()
+        end
+        Obj.HoldDuration = PromptTime
+    end
+end
+
+--// ---------- 免疫减速 ----------
+local multiplierNames = {"FallSlowness","Medkit","BloxyColaItem","GuestBlocking","BeheadAbility","GuestChargeEnded"}
+
+local function enforceMultipliers()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local sm = char:FindFirstChild("SpeedMultipliers")
+    if not sm then return end
+    for _, name in ipairs(multiplierNames) do
+        local v = sm:FindFirstChild(name)
+        if v then v.Value = 1 end
+    end
+end
+
+local function checkAndSetSlowStatus()
+    if AntiSlow == false then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local sm = char:FindFirstChild("SpeedMultipliers")
+    if sm then
+        local s = sm:FindFirstChild("SlowedStatus")
+        if s and s:IsA("NumberValue") then s.Value = 1 end
+    end
+    local fm = char:FindFirstChild("FOVMultipliers")
+    if fm then
+        local s = fm:FindFirstChild("SlowedStatus")
+        if s and s:IsA("NumberValue") then s.Value = 1 end
+    end
+    local ui = PlayerGui:FindFirstChild("MainUI")
+    local sc = ui and ui:FindFirstChild("StatusContainer")
+    local sl = sc and sc:FindFirstChild("Slowness")
+    if sl then sl.Visible = false end
+end
+
+--// ---------- 隐身 ----------
+local function ToggleInvis(enabled)
+    if enabled then
+        running = true
+        task.spawn(function()
+            while running do
+                local char = LocalPlayer.Character
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        local animator = hum:FindFirstChildOfClass("Animator")
+                        if not animator then
+                            animator = Instance.new("Animator")
+                            animator.Parent = hum
+                        end
+                        if not animTrack or not animTrack.IsPlaying then
+                            local a = Instance.new("Animation")
+                            a.AnimationId = "rbxassetid://75804462760596"
+                            animTrack = animator:LoadAnimation(a)
+                            animTrack.Looped = true
+                            animTrack:Play()
+                            animTrack:AdjustSpeed(0)
+                            if char:FindFirstChild("HumanoidRootPart") then
+                                char.HumanoidRootPart.Transparency = 0.4
+                            end
+                        end
+                    end
+                end
+                task.wait(0.5)
+            end
+        end)
+    else
+        running = false
+        if animTrack and animTrack.IsPlaying then
+            animTrack:Stop()
+            animTrack = nil
+        end
+        local char = LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            char.HumanoidRootPart.Transparency = 1
+        end
+    end
+end
+
+local function handleToggle(enabled)
+    if enabled then
+        running = true
+        task.spawn(function()
+            while running do
+                local char = LocalPlayer.Character
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        local animator = hum:FindFirstChildOfClass("Animator")
+                        if not animator then
+                            animator = Instance.new("Animator")
+                            animator.Parent = hum
+                        end
+                        local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+                        if torso and torso.Transparency ~= 0 then
+                            if not animTrack or not animTrack.IsPlaying then
+                                local a = Instance.new("Animation")
+                                a.AnimationId = "rbxassetid://75804462760596"
+                                animTrack = animator:LoadAnimation(a)
+                                animTrack.Looped = true
+                                animTrack:Play()
+                                animTrack:AdjustSpeed(0)
+                                if char:FindFirstChild("HumanoidRootPart") then
+                                    char.HumanoidRootPart.Transparency = 0.4
+                                end
+                            end
+                        else
+                            if animTrack and animTrack.IsPlaying then
+                                animTrack:Stop()
+                                animTrack = nil
+                                if char:FindFirstChild("HumanoidRootPart") then
+                                    char.HumanoidRootPart.Transparency = 1
+                                end
+                            end
+                        end
+                    end
+                end
+                task.wait(0.5)
+            end
+        end)
+    else
+        running = false
+        if animTrack and animTrack.IsPlaying then
+            animTrack:Stop()
+            animTrack = nil
+        end
+        local char = LocalPlayer.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            char.HumanoidRootPart.Transparency = 1
+        end
+    end
+end
+
+--// ---------- 摇摆 / 躺下 ----------
+local function startGoon()
+    local function play()
+        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        local a = Instance.new("Animation")
+        a.AnimationId = "rbxassetid://72042024"
+        local t = hum:LoadAnimation(a)
+        t.Looped = true
+        t:Play()
+        guiRefs.GoonAnim = t
+    end
+    play()
+    guiRefs.GoonConnection = LocalPlayer.CharacterAdded:Connect(function()
+        if toggles.Goon then play() end
+    end)
+end
+
+local function stopGoon()
+    if guiRefs.GoonAnim then guiRefs.GoonAnim:Stop() guiRefs.GoonAnim = nil end
+    if guiRefs.GoonConnection then guiRefs.GoonConnection:Disconnect() guiRefs.GoonConnection = nil end
+end
+
+local function startLayDown()
+    local function play()
+        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        local a = Instance.new("Animation")
+        a.AnimationId = "rbxassetid://181526230"
+        local t = hum:LoadAnimation(a)
+        t.Looped = true
+        t:Play()
+        t.TimePosition = 0.2
+        guiRefs.LayDownAnim = t
+    end
+    play()
+    guiRefs.LayDownConnection = LocalPlayer.CharacterAdded:Connect(function()
+        if toggles.LayDown then play() end
+    end)
+end
+
+local function stopLayDown()
+    if guiRefs.LayDownAnim then guiRefs.LayDownAnim:Stop() guiRefs.LayDownAnim = nil end
+    if guiRefs.LayDownConnection then guiRefs.LayDownConnection:Disconnect() guiRefs.LayDownConnection = nil end
+end
+
+--// ---------- 前空翻 ----------
+local frontflipCooldown = false
+local function doFrontflip()
+    if frontflipCooldown then return end
+    frontflipCooldown = true
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
+    if not hrp or not hum then frontflipCooldown = false return end
+
+    local saved = {}
+    if animator then
+        for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+            saved[#saved+1] = {track = t, time = t.TimePosition}
+            t:Stop(0)
+        end
+    end
+    hum:ChangeState(Enum.HumanoidStateType.Physics)
+    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.Running, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
+
+    local duration = 0.45
+    local steps = 120
+    local start = hrp.CFrame
+    local fwd = start.LookVector
+    local up = Vector3.new(0, 1, 0)
+    task.spawn(function()
+        local t0 = tick()
+        for i = 1, steps do
+            local t = i/steps
+            local h = 4 * (t - t*t) * 10
+            local p = start.Position + fwd * (35*t) + up * h
+            local rot = start.Rotation * CFrame.Angles(-math.rad(i*(360/steps)), 0, 0)
+            hrp.CFrame = CFrame.new(p) * rot
+            local w = (duration/steps)*i - (tick() - t0)
+            if w > 0 then task.wait(w) end
+        end
+        hrp.CFrame = CFrame.new(start.Position + fwd*35) * start.Rotation
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Running, true)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+        hum:ChangeState(Enum.HumanoidStateType.Running)
+        if animator then
+            for _, d in ipairs(saved) do
+                d.track:Play()
+                d.track.TimePosition = d.time
+            end
+        end
+        task.wait(0.25)
+        frontflipCooldown = false
+    end)
+end
+
+--// ---------- 虚空冲刺 ----------
+local voidrushActive = false
+local voidrushConnection = nil
+local function startvoidrushcontrol()
+    if voidrushActive then return end
+    voidrushActive = true
+    voidrushConnection = RunService.RenderStepped:Connect(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hum or not hrp then return end
+        hum.WalkSpeed = 60
+        hum.AutoRotate = false
+        local dir = hrp.CFrame.LookVector
+        local hdir = Vector3.new(dir.X, 0, dir.Z).Unit
+        hum:Move(hdir)
+    end)
+end
+
+local function stopvoidrushcontrol()
+    if not voidrushActive then return end
+    voidrushActive = false
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = 16
+            hum.AutoRotate = true
+            hum:Move(Vector3.new(0,0,0))
+        end
+    end
+    if voidrushConnection then
+        voidrushConnection:Disconnect()
+        voidrushConnection = nil
+    end
+end
+
+--// ---------- Chance 自瞄 ----------
+local aimbotConnection = nil
+local function enableAimbot()
+    local prev = nil
+    local dt = 0.03
+    aimbotConnection = RunService.Heartbeat:Connect(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        local flintlock = char:FindFirstChild("Flintlock")
+        if flintlock and flintlock.Transparency == 0 then
+            local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+            if kf then
+                for _, km in pairs(kf:GetChildren()) do
+                    if km:IsA("Model") and km:FindFirstChild("HumanoidRootPart") then
+                        local hrp = km.HumanoidRootPart
+                        local cur = hrp.Position
+                        local vel = Vector3.new(0,0,0)
+                        if prev then vel = (cur - prev)/dt end
+                        prev = cur
+                        local pred = cur + vel * timeAhead
+                        local root = char:FindFirstChild("HumanoidRootPart")
+                        if root then
+                            hum.AutoRotate = false
+                            root.CFrame = CFrame.new(root.Position, pred)
+                        end
+                    end
+                end
+            end
+        else
+            hum.AutoRotate = true
+        end
+    end)
+end
+
+local function disableAimbot()
+    if aimbotConnection then
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.AutoRotate = true end
+        aimbotConnection:Disconnect()
+        aimbotConnection = nil
+    end
+end
+
+--// ---------- 数据追踪 ----------
+local function createStatsTracker()
+    local eg = PlayerGui:FindFirstChild("TimePlayedGUI")
+    if eg then eg:Destroy() end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "TimePlayedGUI"
+    sg.ResetOnSpawn = false
+    sg.Parent = PlayerGui
+    sg.Enabled = false
+
+    local main = Instance.new("Frame")
+    main.Size = UDim2.new(0, 500, 0, 500)
+    main.Position = UDim2.new(0, 100, 0, 100)
+    main.BackgroundColor3 = Color3.fromRGB(30,30,30)
+    main.BorderSizePixel = 0
+    main.Active = true
+    main.Draggable = true
+    main.Parent = sg
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1,0,0,30)
+    title.BackgroundColor3 = Color3.fromRGB(45,45,45)
+    title.TextColor3 = Color3.new(1,1,1)
+    title.Text = "🎮 玩家数据追踪"
+    title.Font = Enum.Font.SourceSansBold
+    title.TextSize = 20
+    title.Parent = main
+
+    local sf = Instance.new("ScrollingFrame")
+    sf.Size = UDim2.new(1,0,1,-30)
+    sf.Position = UDim2.new(0,0,0,30)
+    sf.CanvasSize = UDim2.new(0,0,0,0)
+    sf.BackgroundTransparency = 1
+    sf.ScrollBarThickness = 6
+    sf.Parent = main
+
+    local ll = Instance.new("UIListLayout")
+    ll.SortOrder = Enum.SortOrder.LayoutOrder
+    ll.Padding = UDim.new(0,5)
+    ll.Parent = sf
+
+    local function fmtTime(s)
+        local d = math.floor(s/86400); s = s%86400
+        local h = math.floor(s/3600);  s = s%3600
+        local m = math.floor(s/60);    s = s%60
+        return string.format("%d天 %02d时 %02d分 %02d秒", d, h, m, s)
+    end
+
+    local function createRow(plr)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1,-10,0,100)
+        btn.BackgroundColor3 = Color3.fromRGB(50,50,50)
+        btn.TextColor3 = Color3.new(1,1,1)
+        btn.Font = Enum.Font.SourceSans
+        btn.TextSize = 16
+        btn.Text = "加载中..."
+        btn.TextWrapped = true
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        btn.LayoutOrder = plr.UserId
+        btn.Parent = sf
+
+        btn.MouseButton1Click:Connect(function()
+            local tv = plr:FindFirstChild("PlayerData") and plr.PlayerData:FindFirstChild("Stats")
+                and plr.PlayerData.Stats:FindFirstChild("General")
+                and plr.PlayerData.Stats.General:FindFirstChild("TimePlayed")
+            local txt = tv and fmtTime(tv.Value) or "无数据"
+            if setclipboard then setclipboard(plr.Name .. " - " .. txt) end
+        end)
+
+        local conn
+        conn = RunService.RenderStepped:Connect(function()
+            if not plr:IsDescendantOf(Players) then
+                btn:Destroy()
+                if conn then conn:Disconnect() end
+                return
+            end
+            local stats = plr:FindFirstChild("PlayerData") and plr.PlayerData:FindFirstChild("Stats")
+            local gen = stats and stats:FindFirstChild("General")
+            local k = stats and stats:FindFirstChild("KillerStats")
+            local s = stats and stats:FindFirstChild("SurvivorStats")
+            local eq = plr:FindFirstChild("PlayerData") and plr.PlayerData:FindFirstChild("Equipped")
+            local tp = gen and gen:FindFirstChild("TimePlayed")
+            local kw = k and k:FindFirstChild("KillerWins")
+            local kl = k and k:FindFirstChild("KillerLosses")
+            local sw = s and s:FindFirstChild("SurvivorWins")
+            local sl = s and s:FindFirstChild("SurvivorLosses")
+            local ki = k and k:FindFirstChild("Kills")
+            local em = eq and eq:FindFirstChild("Emotes")
+            btn.Text = string.format(
+                "%s\n游戏时长: %s\n幸存者胜场: %s | 败场: %s\n杀手胜场: %s | 败场: %s | 击杀: %s\n表情: %s",
+                plr.Name, tp and fmtTime(tp.Value) or "无数据",
+                sw and sw.Value or "无数据", sl and sl.Value or "无数据",
+                kw and kw.Value or "无数据", kl and kl.Value or "无数据", ki and ki.Value or "无数据",
+                em and em.Value or "无"
+            )
+        end)
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then createRow(plr) end
+    end
+    Players.PlayerAdded:Connect(function(plr)
+        if plr ~= LocalPlayer then createRow(plr) end
+    end)
+    RunService.RenderStepped:Connect(function()
+        sf.CanvasSize = UDim2.new(0,0,0,ll.AbsoluteContentSize.Y + 10)
+    end)
+    return sg
+end
+
+--// ---------- 自动修复发电机 ----------
+local function triggerNearestGenerator(shouldLoop)
+    while shouldLoop do
+        looping = true
+        task.wait(timeforonegen + math.random() * 0.5)
+        local map = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Ingame")
+            and Workspace.Map.Ingame:FindFirstChild("Map")
+        if map then
+            local closest, cd = nil, math.huge
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                for _, g in ipairs(map:GetChildren()) do
+                    if g.Name == "Generator" and g:FindFirstChild("Progress") and g.Progress.Value < 100 then
+                        local mn = g:FindFirstChild("Main")
+                        if mn then
+                            local d = (mn.Position - hrp.Position).Magnitude
+                            if d < cd then cd = d closest = g end
+                        end
+                    end
+                end
+            end
+            if closest and closest:FindFirstChild("Remotes") and closest.Remotes:FindFirstChild("RE") then
+                closest.Remotes.RE:FireServer()
+            end
+        end
+    end
+    looping = false
+end
+
+--// ---------- 1x1x1x1 弹窗 ----------
+local function Do1x1x1x1Popups()
+    runEvery(0.05, function()
+        if not Do1x1PopupsLoop then return end
+        local ui = PlayerGui:FindFirstChild("TemporaryUI")
+        if not ui then return end
+        for _, gui in ipairs(ui:GetChildren()) do
+            if gui.Name == "1x1x1x1Popup" and gui:IsA("GuiObject") then
+                local cx = gui.AbsolutePosition.X + (gui.AbsoluteSize.X/2)
+                local cy = gui.AbsolutePosition.Y + (gui.AbsoluteSize.Y/2) + 50
+                VirtualInputManager:SendMouseButtonEvent(cx, cy, Enum.UserInputType.MouseButton1.Value, true, PlayerGui, 1)
+                VirtualInputManager:SendMouseButtonEvent(cx, cy, Enum.UserInputType.MouseButton1.Value, false, PlayerGui, 1)
+            end
+        end
+    end)
+end
+
+--// ---------- ESP ----------
+local PLAYER_ESP = "PlayerESP"
+local ITEM_ESP = "ToolESPHighlight"
+local GEN_ESP = "GeneratorESP"
+local TRAP_ESP = "TrapsandSpikesESP"
+local allHighlights = {}
+
+local function setHlVis(hl, v)
+    if v then
+        hl.FillTransparency = 0.8
+        hl.OutlineTransparency = 0
+    else
+        hl.FillTransparency = 1
+        hl.OutlineTransparency = 1
+    end
+end
+
+local function applyTrapESP(color)
+    local ingame = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Ingame")
+    if not ingame then return end
+    local function hasHook1(o)
+        for _, c in ipairs(o:GetDescendants()) do
+            if c:IsA("BasePart") and c.Name == "Hook1" then return true end
+        end
+        return false
+    end
+    local function ensure(t)
+        if not t:FindFirstChild(TRAP_ESP) then
+            local h = Instance.new("Highlight")
+            h.Name = TRAP_ESP
+            h.FillColor = color
+            h.OutlineColor = Color3.fromRGB(255,255,255)
+            h.OutlineTransparency = 0
+            h.FillTransparency = 0.8
+            h.Adornee = t
+            h.Parent = t
+            allHighlights[h] = true
+        end
+    end
+    for _, o in ipairs(ingame:GetDescendants()) do
+        if o:IsA("Model") or o:IsA("BasePart") then
+            if o.Name == "Spike" or o.Name == "SubspaceTripmine" then
+                ensure(o)
+            elseif o.Name == "Shadow" then
+                if o:IsA("BasePart") then o.Transparency = 0
+                elseif o:IsA("Model") then
+                    for _, p in ipairs(o:GetDescendants()) do
+                        if p:IsA("BasePart") then p.Transparency = 0 end
+                    end
+                end
+                ensure(o)
+            elseif hasHook1(o) then
+                ensure(o)
+            elseif typeof(o.Name) == "string" and string.find(o.Name, "RespawnLocation") then
+                if o:IsA("BasePart") then o.Transparency = 0
+                elseif o:IsA("Model") then
+                    for _, p in ipairs(o:GetDescendants()) do
+                        if p:IsA("BasePart") then p.Transparency = 0 end
+                    end
+                end
+                ensure(o)
+            end
+        end
+    end
+end
+
+local function applyPlayerESP(char, color)
+    if not char:IsA("Model") then return end
+    if not Players:GetPlayerFromCharacter(char) then return end
+    if char:FindFirstChild(PLAYER_ESP) then return end
+    if char == LocalPlayer.Character then return end
+
+    local h = Instance.new("Highlight")
+    h.Name = PLAYER_ESP
+    h.FillColor = color
+    h.Adornee = char
+    h.Parent = char
+
+    local head = char:FindFirstChild("Head")
+    if head then
+        local bb = Instance.new("BillboardGui", head)
+        bb.Name = "PlayerESPBillboard"
+        bb.Size = UDim2.new(0,100,0,50)
+        bb.StudsOffset = Vector3.new(0,2,0)
+        local tl = Instance.new("TextLabel", bb)
+        tl.Size = UDim2.new(1,0,1,0)
+        tl.Text = "(" .. tostring(char.Name) .. ")"
+        tl.TextColor3 = Color3.new(1,1,1)
+        tl.TextStrokeTransparency = 0
+        tl.TextStrokeColor3 = Color3.new(0,0,0)
+        bb.AlwaysOnTop = true
+        tl.BackgroundTransparency = 1
+    end
+    setHlVis(h, ESP_Enabled)
+    allHighlights[h] = true
+end
+
+local function applyItemHl(tool, color)
+    if not tool:FindFirstChild(ITEM_ESP) then
+        local h = Instance.new("Highlight")
+        h.Name = ITEM_ESP
+        h.Adornee = tool
+        h.FillColor = color
+        h.OutlineColor = Color3.new(1,1,1)
+        h.Parent = tool
+        setHlVis(h, ESP_Enabled)
+        allHighlights[h] = true
+    end
+end
+
+local function highlightTool(tool)
+    if tool:IsA("Tool") then
+        if tool.Name == "Medkit" then
+            applyItemHl(tool, Color3.fromRGB(0,255,0))
+        elseif tool.Name == "BloxyCola" or tool.Name == "Cola" then
+            applyItemHl(tool, Color3.fromRGB(0,150,255))
+        end
+    end
+end
+
+local function addGenHl(model)
+    if model:FindFirstChild(GEN_ESP) then return end
+    local h = Instance.new("Highlight")
+    h.Name = GEN_ESP
+    h.FillColor = Color3.fromRGB(255,255,0)
+    h.Adornee = model
+    h.Parent = model
+    setHlVis(h, ESP_Enabled)
+    allHighlights[h] = true
+end
+
+local function removeGenHl(model)
+    local e = model:FindFirstChild(GEN_ESP)
+    if e then
+        allHighlights[e] = nil
+        e:Destroy()
+    end
+end
+
+local function trackGen(gen)
+    local prog = gen:FindFirstChild("Progress")
+    local inst = gen:FindFirstChild("Instances")
+    if not prog or not inst then return end
+    local gm = inst:FindFirstChild("Generator")
+    if not gm or not gm:IsA("Model") then return end
+    if prog.Value < 100 then addGenHl(gm) else removeGenHl(gm) end
+    prog:GetPropertyChangedSignal("Value"):Connect(function()
+        if prog.Value >= 100 then removeGenHl(gm) else addGenHl(gm) end
+    end)
+end
+
+local function setESP(state)
+    ESP_Enabled = state
+    for h, _ in pairs(allHighlights) do
+        setHlVis(h, state)
+    end
+    local pf = Workspace:FindFirstChild("Players")
+    if pf then
+        for _, tf in pairs(pf:GetChildren()) do
+            for _, c in pairs(tf:GetChildren()) do
+                local bb = c:FindFirstChild("PlayerESPBillboard", true)
+                if bb then bb.Enabled = state end
+            end
+        end
+    end
+end
+
+runEvery(0.5, function()
+    local pf = Workspace:FindFirstChild("Players")
+    if not pf then return end
+    local s = pf:FindFirstChild("Survivors")
+    if s then
+        for _, c in ipairs(s:GetChildren()) do
+            applyPlayerESP(c, Color3.fromRGB(0,255,0))
+        end
+    end
+    local k = pf:FindFirstChild("Killers")
+    if k then
+        for _, c in ipairs(k:GetChildren()) do
+            applyPlayerESP(c, Color3.fromRGB(255,0,0))
+        end
+    end
+    applyTrapESP(Color3.fromRGB(255,0,0))
+end)
+
+for _, t in ipairs(Workspace:GetDescendants()) do highlightTool(t) end
+Workspace.DescendantAdded:Connect(highlightTool)
+
+task.spawn(function()
+    local mc
+    repeat
+        local mr = Workspace:FindFirstChild("Map")
+        local ig = mr and mr:FindFirstChild("Ingame")
+        mc = ig and ig:FindFirstChild("Map")
+        task.wait(0.5)
+    until mc
+    for _, g in ipairs(mc:GetChildren()) do
+        if g.Name == "Generator" and g:IsA("Model") then trackGen(g) end
+    end
+end)
+
+--// ---------- Guest 1337 逻辑 ----------
+local GSAnims = {
+    "126830014841198","126355327951215","121086746534252","18885909645",
+    "98456918873918","105458270463374","83829782357897","125403313786645",
+    "118298475669935","82113744478546","70371667919898","99135633258223",
+    "97167027849946","109230267448394","139835501033932","126896426760253",
+    "109667959938617","126681776859538","129976080405072","121293883585738",
+    "81639435858902","137314737492715","92173139187970","106847695270773"
+}
+
+local function fireRemoteBlock()
+    local m = ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Network"):WaitForChild("RemoteEvent")
+    m:FireServer("UseActorAbility", "Block")
+end
+
+local function isFacing(lr, tr)
+    if not facingCheckEnabled then return true end
+    if not lr or not tr then return false end
+    local off = lr.Position - tr.Position
+    if off.Magnitude == 0 then return false end
+    local d = off.Unit
+    local dot = tr.CFrame.LookVector:Dot(d)
+    if looseFacing then return dot > -0.3 else return dot > 0 end
+end
+
+RunService.RenderStepped:Connect(function()
+    local myChar = LocalPlayer.Character
+    if not myChar then return end
+    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+    local myHum = myChar:FindFirstChildOfClass("Humanoid")
+    if not myRoot or not myHum then return end
+
+    -- 自动格挡
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum then
+                local an = hum:FindFirstChildOfClass("Animator")
+                if an then
+                    local d = (hrp.Position - myRoot.Position).Magnitude
+                    if d <= detectionRange then
+                        for _, tr in ipairs(an:GetPlayingAnimationTracks()) do
+                            local id = tostring(tr.Animation.AnimationId):match("%d+")
+                            if id and table.find(GSAnims, id) then
+                                if GuestSettingsOn and (not strictRangeOn or d <= detectionRange) then
+                                    if isFacing(myRoot, hrp) then fireRemoteBlock() end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 格挡传送
+    if blockTPEnabled and tick() - lastBlockTpTime >= 5 then
+        for _, tr in ipairs(myHum:GetPlayingAnimationTracks()) do
+            local id = tostring(tr.Animation.AnimationId):match("%d+")
+            if id == "72722244508749" or id == "96959123077498" then
+                local killers = {"c00lkidd","Jason","JohnDoe","1x1x1x1","Noli"}
+                for _, name in ipairs(killers) do
+                    local k = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+                        and Workspace.Players.Killers:FindFirstChild(name)
+                    if k and k:FindFirstChild("HumanoidRootPart") then
+                        lastBlockTpTime = tick()
+                        task.spawn(function()
+                            local t0 = tick()
+                            while tick() - t0 < 0.5 do
+                                local c = LocalPlayer.Character
+                                if c and c:FindFirstChild("HumanoidRootPart") then
+                                    local kr = k.HumanoidRootPart
+                                    c.HumanoidRootPart.CFrame = CFrame.new(kr.Position + kr.CFrame.LookVector * 6)
+                                end
+                                task.wait()
+                            end
+                        end)
+                        break
+                    end
+                end
+                break
+            end
+        end
+    end
+
+    -- 预测性自动格挡
+    if predictiveBlockOn and tick() > predictiveCooldown then
+        local kf = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+        if kf then
+            local inRange = false
+            for _, k in ipairs(kf:GetChildren()) do
+                local hrp = k:FindFirstChild("HumanoidRootPart")
+                if hrp and (myRoot.Position - hrp.Position).Magnitude <= detectionRange then
+                    inRange = true
+                    break
+                end
+            end
+            if inRange then
+                if not killerInRangeSince then
+                    killerInRangeSince = tick()
+                elseif tick() - killerInRangeSince >= edgeKillerDelay then
+                    fireRemoteBlock()
+                    predictiveCooldown = tick() + 2
+                    killerInRangeSince = nil
+                end
+            else
+                killerInRangeSince = nil
+            end
+        end
+    end
+
+    -- 自动出拳
+    if GuestSettingsOn then
+        local gui = PlayerGui:FindFirstChild("MainUI")
+        local pb = gui and gui:FindFirstChild("AbilityContainer") and gui.AbilityContainer:FindFirstChild("Punch")
+        local ch = pb and pb:FindFirstChild("Charges")
+        if ch and ch.Text == "1" then
+            local names = {"c00lkidd","Jason","JohnDoe","1x1x1x1","Noli"}
+            for _, name in ipairs(names) do
+                local k = Workspace:FindFirstChild("Players") and Workspace.Players:FindFirstChild("Killers")
+                    and Workspace.Players.Killers:FindFirstChild(name)
+                if k and k:FindFirstChild("HumanoidRootPart") then
+                    local kr = k.HumanoidRootPart
+                    if (kr.Position - myRoot.Position).Magnitude <= 10 then
+                        if aimPunch then
+                            myHum.AutoRotate = false
+                            task.spawn(function()
+                                local t0 = tick()
+                                while tick() - t0 < 2 do
+                                    local c = LocalPlayer.Character
+                                    local mr = c and c:FindFirstChild("HumanoidRootPart")
+                                    local tr = k:FindFirstChild("HumanoidRootPart")
+                                    if mr and tr then
+                                        local pp = tr.Position + (tr.CFrame.LookVector * predictionValue)
+                                        mr.CFrame = CFrame.lookAt(mr.Position, pp)
+                                    end
+                                    task.wait()
+                                end
+                                if myHum and myHum.Parent then myHum.AutoRotate = true end
+                            end)
+                        end
+                        for _, conn in ipairs(getconnections(pb.MouseButton1Click)) do
+                            pcall(function() conn:Fire() end)
+                        end
+                        if flingPunchOn then
+                            hiddenfling = true
+                            task.spawn(function()
+                                local t0 = tick()
+                                while tick() - t0 < 1 do
+                                    local c = LocalPlayer.Character
+                                    if c and c:FindFirstChild("HumanoidRootPart") and kr and kr.Parent then
+                                        local fp = kr.Position + (kr.CFrame.LookVector * 2)
+                                        c.HumanoidRootPart.CFrame = CFrame.new(fp, kr.Position)
+                                    end
+                                    task.wait()
+                                end
+                                hiddenfling = false
+                            end)
+                        end
+                        break
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- 免疫减速循环
+RunService.RenderStepped:Connect(function()
+    if AntiSlow then
+        checkAndSetSlowStatus()
+        enforceMultipliers()
+    end
+end)
+
+-- hiddenfling
+task.spawn(function()
+    local hrp, c, vel, movel = nil, nil, nil, 0.1
+    while true do
+        RunService.Heartbeat:Wait()
+        if hiddenfling then
+            while hiddenfling and not (c and c.Parent and hrp and hrp.Parent) do
+                RunService.Heartbeat:Wait()
+                c = LocalPlayer.Character
+                hrp = c and c:FindFirstChild("HumanoidRootPart")
+            end
+            if hiddenfling and hrp then
+                vel = hrp.Velocity
+                hrp.Velocity = vel * flingPower + Vector3.new(0, flingPower, 0)
+                RunService.RenderStepped:Wait()
+                hrp.Velocity = vel
+                RunService.Stepped:Wait()
+                hrp.Velocity = vel + Vector3.new(0, movel, 0)
+                movel = movel * -1
+            end
+        end
+    end
+end)
+
+--// ---------- Hitbox 冲刺 ----------
+local AttackAnims = {
+    "rbxassetid://131430497821198","rbxassetid://83829782357897","rbxassetid://126830014841198",
+    "rbxassetid://126355327951215","rbxassetid://121086746534252","rbxassetid://105458270463374",
+    "rbxassetid://127172483138092","rbxassetid://18885919947","rbxassetid://18885909645",
+    "rbxassetid://87259391926321","rbxassetid://106014898528300","rbxassetid://86545133269813",
+    "rbxassetid://89448354637442","rbxassetid://90499469533503","rbxassetid://116618003477002",
+    "rbxassetid://106086955212611","rbxassetid://107640065977686","rbxassetid://77124578197357",
+    "rbxassetid://101771617803133","rbxassetid://134958187822107","rbxassetid://111313169447787",
+    "rbxassetid://71685573690338","rbxassetid://129843313690921","rbxassetid://97623143664485",
+    "rbxassetid://136007065400978","rbxassetid://86096387000557","rbxassetid://108807732150251",
+    "rbxassetid://138040001965654","rbxassetid://73502073176819","rbxassetid://86709774283672",
+    "rbxassetid://140703210927645","rbxassetid://96173857867228","rbxassetid://121255898612475",
+    "rbxassetid://98031287364865","rbxassetid://119462383658044","rbxassetid://77448521277146",
+    "rbxassetid://103741352379819","rbxassetid://131696603025265","rbxassetid://122503338277352",
+    "rbxassetid://97648548303678","rbxassetid://94162446513587","rbxassetid://84426150435898",
+    "rbxassetid://93069721274110","rbxassetid://114620047310688","rbxassetid://97433060861952",
+    "rbxassetid://82183356141401","rbxassetid://100592913030351","rbxassetid://121293883585738",
+    "rbxassetid://70447634862911","rbxassetid://92173139187970","rbxassetid://106847695270773",
+    "rbxassetid://125403313786645","rbxassetid://81639435858902","rbxassetid://137314737492715",
+    "rbxassetid://120112897026015","rbxassetid://82113744478546","rbxassetid://118298475669935",
+    "rbxassetid://126681776859538","rbxassetid://129976080405072","rbxassetid://109667959938617",
+    "rbxassetid://74707328554358","rbxassetid://133336594357903","rbxassetid://86204001129974",
+    "rbxassetid://124243639579224","rbxassetid://70371667919898","rbxassetid://131543461321709",
+    "rbxassetid://136323728355613","rbxassetid://109230267448394"
+}
+
+RunService.Heartbeat:Connect(function()
+    if not hitboxmodificationEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    local playing = false
+    for _, t in ipairs(hum:GetPlayingAnimationTracks()) do
+        if table.find(AttackAnims, t.Animation.AnimationId) and (t.TimePosition / t.Length < 0.75) then
+            playing = true
+            break
+        end
+    end
+    if not playing then return end
+
+    local Target
+    local ND = MaxRange
+    local function scan(grp)
+        for _, o in ipairs(grp) do
+            if o == char or not o:FindFirstChild("HumanoidRootPart") then continue end
+            local d = (o.HumanoidRootPart.Position - hrp.Position).Magnitude
+            if d < ND then ND = d Target = o end
+        end
+    end
+    local pf = Workspace:FindFirstChild("Players")
+    if pf then scan(pf:GetDescendants()) end
+    local map = Workspace:FindFirstChild("Map", true)
+    local npcs = map and map:FindFirstChild("NPCs", true)
+    if npcs then scan(npcs:GetChildren()) end
+    if not Target then return end
+
+    local ping = LocalPlayer:GetNetworkPing()
+    local ro = Vector3.new(RNG:NextNumber(-1.5,1.5), 0, RNG:NextNumber(-1.5,1.5))
+    local pred = Target.HumanoidRootPart.Position + ro + (Target.HumanoidRootPart.Velocity * (ping * 1.25))
+    local nv = (pred - hrp.Position) / (ping * 2)
+    local ov = hrp.Velocity
+    hrp.Velocity = nv
+    RunService.RenderStepped:Wait()
+    hrp.Velocity = ov
+end)
+
+--// ============================================================
+--// WindUI 窗口（照音乐播放器写法）
+--// ============================================================
+local Window = WindUI:CreateWindow({
+    Title = "喵喵星 forsaken v1 test",
+    Folder = "GoonsakenHub",
+    Icon = "gamepad-2",
+    Size = UDim2.fromOffset(620, 520),
+    Theme = "Dark",
+    HideSearchBar = false,
+    OpenButton = {
+        Title = "喵喵星 forsaken",
+        CornerRadius = UDim.new(1, 0),
+        StrokeThickness = 3,
+        Enabled = true,
+        Draggable = true,
+        OnlyMobile = false,
+        Color = ColorSequence.new(
+            Color3.fromHex("#30FF6A"),
+            Color3.fromHex("#e7ff2f")
+        ),
+    },
+})
+
+game:GetService("StarterGui"):SetCore("SendNotification", {
+    Title = "喵喵星";
+    Text = "欢迎使用";
+    Duration = 4;
+})
+
+WindUI:Notify({
+    Title = "喵喵星 forsaken",
+    Content = "正在加载...",
+    Duration = 4
+})
+
+--// ============ 标签页 ============
+local AboutTab = Window:Tab({ Title = "简介", Icon = "info" })
+local PlayerTab = Window:Tab({ Title = "玩家", Icon = "user" })
+local GameTab = Window:Tab({ Title = "游戏", Icon = "gamepad-2" })
+local GenTab = Window:Tab({ Title = "发电机", Icon = "zap" })
+local GuestTab = Window:Tab({ Title = "Guest 1337 专用", Icon = "leaf" })
+
+--// ============ 简介 ============
+AboutTab:Paragraph({ Title = "你好", Desc = "Forsaken 游戏脚本" })
+AboutTab:Paragraph({ Title = "感谢", Desc = "感谢所有测试者与贡献者" })
+
+--// ============ 玩家 ============
+PlayerTab:Slider({
+    Title = "移动速度",
+    Value = { Min = 1, Max = 5, Default = 1, Step = 1 },
+    Callback = function(v)
+        local c = LocalPlayer.Character
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        if h and h.Parent:FindFirstChild("SpeedMultipliers") then
+            h.Parent.SpeedMultipliers.Sprinting.Value = v
+        end
+    end
+})
+
+PlayerTab:Slider({
+    Title = "跳跃力",
+    Value = { Min = 0, Max = 100, Default = 50, Step = 1 },
+    Callback = function(v)
+        local c = LocalPlayer.Character
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        if h then h.JumpPower = v end
+    end
+})
+
+PlayerTab:Toggle({
+    Title = "摇摆",
+    Value = false,
+    Callback = function(v)
+        toggles.Goon = v
+        if v then startGoon() else stopGoon() end
+    end
+})
+
+PlayerTab:Toggle({
+    Title = "躺下",
+    Value = false,
+    Callback = function(v)
+        toggles.LayDown = v
+        if v then startLayDown() else stopLayDown() end
+    end
+})
+
+PlayerTab:Button({
+    Title = "前空翻 (按键: P)",
+    Icon = "rotate-ccw",
+    Callback = function() doFrontflip() end
+})
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    if input.KeyCode == Enum.KeyCode.P then doFrontflip() end
+end)
+
+PlayerTab:Toggle({
+    Title = "免疫减速",
+    Value = false,
+    Callback = function(v) AntiSlow = v end
+})
+
+PlayerTab:Toggle({
+    Title = "虚空冲刺控制",
+    Value = false,
+    Callback = function(v)
+        if v then startvoidrushcontrol() else stopvoidrushcontrol() end
+    end
+})
+
+PlayerTab:Button({
+    Title = "自动 404 parry",
+    Icon = "shield",
+    Callback = function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/NumanTF3/auto-404-parry/refs/heads/main/main.lua"))()
+    end
+})
+
+PlayerTab:Button({
+    Title = "自动 Raging Pace parry",
+    Icon = "shield",
+    Callback = function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/NumanTF3/auto-raging-pace/refs/heads/main/main.lua"))()
+    end
+})
+
+PlayerTab:Toggle({
+    Title = "Chance 自瞄",
+    Value = false,
+    Callback = function(v)
+        if v then enableAimbot() else disableAimbot() end
+    end
+})
+
+PlayerTab:Slider({
+    Title = "Chance 自瞄预测值 (x0.1)",
+    Value = { Min = 1, Max = 20, Default = 2, Step = 1 },
+    Callback = function(v) timeAhead = v / 10 end
+})
+
+PlayerTab:Button({
+    Title = "自在极意功 (自动闪避杀手)",
+    Icon = "zap",
+    Callback = function()
+        loadstring(game:HttpGet('https://raw.githubusercontent.com/NumanTF3/forsaken-ultra-instinct/refs/heads/main/main.lua'))()
+    end
+})
+
+PlayerTab:Button({
+    Title = "自动 Two Time 背刺与自瞄",
+    Icon = "target",
+    Callback = function()
+        loadstring(game:HttpGet('https://raw.githubusercontent.com/NumanTF3/two-time-backstab/refs/heads/main/main.lua'))()
+    end
+})
+
+PlayerTab:Toggle({
+    Title = "隐身",
+    Value = false,
+    Callback = function(v)
+        if v then
+            WindUI:Notify({
+                Title = "提示",
+                Content = "屏幕中间的方块代表你的角色，其他人看你依然是隐身的。",
+                Duration = 5
+            })
+        end
+        ToggleInvis(v)
+    end
+})
+
+PlayerTab:Toggle({
+    Title = "分身时完全隐身 (007n7)",
+    Value = false,
+    Callback = function(v)
+        if v then
+            WindUI:Notify({
+                Title = "提示",
+                Content = "分身时屏幕中间的方块代表你的角色，其他人看你依然隐身。",
+                Duration = 5
+            })
+        end
+        handleToggle(v)
+    end
+})
+
+PlayerTab:Toggle({
+    Title = "判定框修改 (攻击时冲刺)",
+    Value = false,
+    Callback = function(v) hitboxmodificationEnabled = v end
+})
+
+PlayerTab:Input({
+    Title = "判定框检测距离",
+    Placeholder = "默认 120",
+    Callback = function(v)
+        local n = tonumber(v)
+        if n then MaxRange = n end
+    end
+})
+
+--// ============ 游戏 ============
+GameTab:Toggle({
+    Title = "ESP 透视",
+    Value = false,
+    Callback = function(v)
+        toggles.ESP = v
+        setESP(v)
+    end
+})
+
+local statsGui = createStatsTracker()
+statsGui.Enabled = false
+
+GameTab:Toggle({
+    Title = "数据追踪",
+    Value = false,
+    Callback = function(v)
+        toggles.StatsTracker = v
+        if statsGui then statsGui.Enabled = v end
+    end
+})
+
+GameTab:Toggle({
+    Title = "无限体力 (仅部分执行器可用)",
+    Value = false,
+    Callback = function(v)
+        infinitestamina = v
+        task.spawn(function()
+            while infinitestamina do
+                local ok = pcall(function()
+                    local S = ReplicatedStorage.Systems.Character.Game.Sprinting
+                    local st = require(S)
+                    st.StaminaLossDisabled = true
+                end)
+                if not ok then
+                    WindUI:Notify({
+                        Title = "错误",
+                        Content = "你的执行器不支持无限体力",
+                        Duration = 5
+                    })
+                    infinitestamina = false
+                    break
+                end
+                task.wait(0.5)
+            end
+            pcall(function()
+                local S = ReplicatedStorage.Systems.Character.Game.Sprinting
+                local st = require(S)
+                st.StaminaLossDisabled = false
+            end)
+        end)
+    end
+})
+
+GameTab:Toggle({
+    Title = "被踢时自动重连",
+    Value = true,
+    Callback = function(v)
+        toggles.AutoRejoinOnKick = v
+        if v then
+            if not activeConnections.AutoRejoin then
+                activeConnections.AutoRejoin = GuiService.ErrorMessageChanged:Connect(function(msg)
+                    if msg and msg ~= "" then
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId)
+                    end
+                end)
+            end
+        else
+            if activeConnections.AutoRejoin then
+                activeConnections.AutoRejoin:Disconnect()
+                activeConnections.AutoRejoin = nil
+            end
+        end
+    end
+})
+
+GameTab:Button({
+    Title = "重连",
+    Icon = "refresh-cw",
+    Callback = function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId)
+    end
+})
+
+GameTab:Toggle({
+    Title = "自动修复发电机 (必须站在发电机旁)",
+    Value = false,
+    Callback = function(v) triggerNearestGenerator(v) end
+})
+
+GameTab:Slider({
+    Title = "修复发电机速度 (x0.1)",
+    Value = { Min = 25, Max = 100, Default = 25, Step = 5 },
+    Callback = function(v) timeforonegen = v / 10 end
+})
+
+GameTab:Toggle({
+    Title = "自动处理 1x1x1x1 弹窗",
+    Value = false,
+    Callback = function(v)
+        Do1x1PopupsLoop = v
+        if v then task.spawn(Do1x1x1x1Popups) end
+    end
+})
+
+--// ============ 发电机 ============
+local function generatorDoAll()
+    local function findGens()
+        local mf = Workspace:FindFirstChild("Map")
+        local ig = mf and mf:FindFirstChild("Ingame")
+        local m = ig and ig:FindFirstChild("Map")
+        local gens = {}
+        if m then
+            for _, g in ipairs(m:GetChildren()) do
+                if g.Name == "Generator" and g:IsA("Model") and g:FindFirstChild("Progress") and g.Progress.Value < 100 then
+                    local near = false
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        local c = p.Character
+                        local hr = c and c:FindFirstChild("HumanoidRootPart")
+                        if hr and g:FindFirstChild("Main") and (hr.Position - g.Main.Position).Magnitude < 25 then
+                            near = true
+                            break
+                        end
+                    end
+                    if not near then table.insert(gens, g) end
+                end
+            end
+        end
+        return gens
+    end
+
+    local c = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hr = c:WaitForChild("HumanoidRootPart")
+    local last = hr.CFrame
+
+    while true do
+        local gens = findGens()
+        if #gens == 0 then break end
+        for _, g in ipairs(gens) do
+            if g:FindFirstChild("Main") and g:FindFirstChild("Remotes")
+                and g.Remotes:FindFirstChild("RE") and g.Remotes:FindFirstChild("RF") then
+                local gp = g.Positions.Center.Position
+                local gd
+                if g.Instances.Generator:FindFirstChild("Cube") and g.Instances.Generator.Cube:IsA("BasePart") then
+                    gd = (g.Instances.Generator.Cube.Position - gp).Unit
+                else
+                    gd = Vector3.new(0,0,1)
+                end
+                hr.CFrame = CFrame.new(gp + Vector3.new(0,0.5,0), gp + Vector3.new(gd.X, 0, gd.Z))
+                task.wait(timebetweenpuzzles / 2)
+                local p = g.Main:FindFirstChildOfClass("ProximityPrompt") or g.Main:FindFirstChild("Prompt")
+                if p then fireproximityprompt(p, 1.5, false) end
+                for _ = 1, 6 do
+                    task.wait(2.5)
+                    g.Remotes.RE:FireServer()
+                end
+                task.wait(timebetweenpuzzles / 5)
+                g.Remotes.RF:InvokeServer("leave")
+            end
+        end
+    end
+    hr.CFrame = last
+end
+
+GenTab:Button({
+    Title = "修复所有发电机",
+    Icon = "wrench",
+    Callback = function() generatorDoAll() end
+})
+
+GenTab:Slider({
+    Title = "修复所有发电机速度 (秒)",
+    Value = { Min = 3, Max = 10, Default = 3, Step = 1 },
+    Callback = function(v) timebetweenpuzzles = v end
+})
+
+--// ============ Guest 1337 专用 ============
+GuestTab:Paragraph({ Title = "说明", Desc = "本页功能改编自 skibisaken 脚本。" })
+
+GuestTab:Toggle({
+    Title = "自定义充能速度",
+    Value = false,
+    Callback = function(v) toggles.CustomCharge = v end
+})
+
+GuestTab:Slider({
+    Title = "充能速度 (x0.1)",
+    Value = { Min = 28, Max = 150, Default = 28, Step = 1 },
+    Callback = function(v) GuestChargeSpeed = v / 10 end
+})
+
+RunService.Stepped:Connect(function()
+    if toggles.CustomCharge then
+        local c = LocalPlayer.Character
+        if not c then return end
+        local sm = c:FindFirstChild("SpeedMultipliers")
+        if not sm then return end
+        local m = sm:FindFirstChild("Guest1337Charge")
+        if m then m.Value = GuestChargeSpeed end
+    end
+end)
+
+GuestTab:Toggle({
+    Title = "自动格挡 + 自动出拳",
+    Value = false,
+    Callback = function(v) GuestSettingsOn = v end
+})
+
+GuestTab:Toggle({
+    Title = "严格范围",
+    Value = false,
+    Callback = function(v) strictRangeOn = v end
+})
+
+GuestTab:Toggle({
+    Title = "严格朝向 (关闭 = 宽松)",
+    Value = false,
+    Callback = function(v) looseFacing = not v end
+})
+
+GuestTab:Input({
+    Title = "检测范围",
+    Placeholder = "默认 18",
+    Callback = function(v)
+        local n = tonumber(v)
+        if n then detectionRange = n end
+    end
+})
+
+GuestTab:Toggle({
+    Title = "格挡传送",
+    Value = false,
+    Callback = function(v) blockTPEnabled = v end
+})
+
+GuestTab:Toggle({
+    Title = "预测性自动格挡",
+    Value = false,
+    Callback = function(v) predictiveBlockOn = v end
+})
+
+GuestTab:Slider({
+    Title = "边角杀手延迟 (秒)",
+    Value = { Min = 0, Max = 7, Default = 3, Step = 1 },
+    Callback = function(v) edgeKillerDelay = v end
+})
+
+GuestTab:Button({
+    Title = "加载假格挡",
+    Icon = "shield-off",
+    Callback = function()
+        pcall(function()
+            local fg = PlayerGui:FindFirstChild("FakeBlockGui")
+            if not fg then
+                loadstring(game:HttpGet("https://pastebin.com/raw/ztnYv27k"))()
+            else
+                fg.Enabled = true
+            end
+        end)
+    end
+})
+
+GuestTab:Toggle({
+    Title = "击飞拳",
+    Value = false,
+    Callback = function(v) flingPunchOn = v end
+})
+
+GuestTab:Toggle({
+    Title = "出拳自瞄",
+    Value = false,
+    Callback = function(v) aimPunch = v end
+})
+
+GuestTab:Slider({
+    Title = "自瞄预测 (单位)",
+    Value = { Min = 0, Max = 10, Default = 4, Step = 1 },
+    Callback = function(v) predictionValue = v end
+})
+
+GuestTab:Slider({
+    Title = "击飞力度",
+    Value = { Min = 5000, Max = 100000, Default = 10000, Step = 5000 },
+    Callback = function(v) flingPower = v end
+})
+
+--// 默认启用重连
+if toggles.AutoRejoinOnKick then
+    activeConnections.AutoRejoin = GuiService.ErrorMessageChanged:Connect(function(msg)
+        if msg and msg ~= "" then
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId)
+        end
+    end)
+end
+
+WindUI:Notify({
+    Title = "喵喵星",
+    Content = "玩的开心",
+    Duration = 6
+})
