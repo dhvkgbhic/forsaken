@@ -1091,8 +1091,8 @@ local Window = OrionLib:MakeWindow({
     Name = "喵喵星 forsaken v1 test",
     HidePremium = false,
     SaveConfig = true,
-    IntroText = "Goonsaken Hub v3.1.1",
-    ConfigFolder = "GoonsakenHub"
+    IntroText = "miaomiaoxing",
+    ConfigFolder = "喵喵⭐️星"
 })
 
 game:GetService("StarterGui"):SetCore("SendNotification", {
